@@ -1,3 +1,4 @@
 Initial student model and BKT parameters
 Add structured evaluator for correctness
 Basic BKT update step
+Add observation confidence
