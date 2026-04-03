@@ -8,3 +8,4 @@ Support correct/partial/incorrect/unknown
 One observation per student event
 Add learn, guess, slip, forget params
 Add reasoning detector
+Add uncertainty detector
