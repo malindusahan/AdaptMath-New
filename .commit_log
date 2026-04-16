@@ -13,3 +13,4 @@ Add clarification detector
 Introduce Signal Resolver
 Correct + uncertainty → reduced confidence
 Incorrect + uncertainty → stronger negative
+Unknown + uncertainty → weak negative proxy
