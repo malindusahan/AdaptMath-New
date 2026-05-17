@@ -23,3 +23,4 @@ Teaching-progress evaluator
 Define Attempt as one tutoring session
 Snapshot mastery_before at attempt start
 Compute mastery_after and delta
+Support signed delta_mastery
