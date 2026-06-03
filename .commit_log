@@ -29,3 +29,4 @@ Assessment also goes through BKT
 Pass delta as delayed reward
 Move selector must not calculate mastery
 Attempt-level mastery tests
+Fix inconsistent initial prior problem
