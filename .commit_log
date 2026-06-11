@@ -32,3 +32,4 @@ Attempt-level mastery tests
 Fix inconsistent initial prior problem
 Immutable effective_initial_prior
 Support prior provenance types
+Store prior in Knowledge Graph
