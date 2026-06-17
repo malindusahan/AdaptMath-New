@@ -34,3 +34,4 @@ Immutable effective_initial_prior
 Support prior provenance types
 Store prior in Knowledge Graph
 Guarantee mastery continuity across attempts
+Knowledge Graph owns mastery
