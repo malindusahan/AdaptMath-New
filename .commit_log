@@ -38,3 +38,4 @@ Knowledge Graph owns mastery
 Persist observations and mastery states
 Block unauthorized mastery writes
 Full-history BKT recomputation
+Verify recomputation matches live state
