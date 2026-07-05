@@ -41,3 +41,4 @@ Full-history BKT recomputation
 Verify recomputation matches live state
 Unauthorized skill isolation tests
 Learning Path Generator skeleton
+Load curriculum prerequisite graph
