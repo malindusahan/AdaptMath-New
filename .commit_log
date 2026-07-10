@@ -43,3 +43,4 @@ Unauthorized skill isolation tests
 Learning Path Generator skeleton
 Load curriculum prerequisite graph
 Combine mastery with prerequisites
+Define skill states (weak/partial/strong etc)
