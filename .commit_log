@@ -45,3 +45,4 @@ Load curriculum prerequisite graph
 Combine mastery with prerequisites
 Define skill states (weak/partial/strong etc)
 Strong threshold set to 0.70
+Handle multi-parent prerequisites
