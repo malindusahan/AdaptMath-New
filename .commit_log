@@ -48,3 +48,4 @@ Strong threshold set to 0.70
 Handle multi-parent prerequisites
 Produce recommended_order
 Report blocked, unseen, regressions
+Report learn_next and already_strong
