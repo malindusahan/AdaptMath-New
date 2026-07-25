@@ -49,3 +49,4 @@ Handle multi-parent prerequisites
 Produce recommended_order
 Report blocked, unseen, regressions
 Report learn_next and already_strong
+No semantic similarity for prerequisites
