@@ -53,3 +53,4 @@ No semantic similarity for prerequisites
 Path generator + student model integration
 Path generation tests
 Wire student model into full lifecycle
+Snapshot mastery_before on attempt start
