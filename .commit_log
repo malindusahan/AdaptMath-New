@@ -63,3 +63,4 @@ Smoke: shared attempt identity
 Smoke: attempt-start snapshot
 Smoke: no premature LinTS update
 Smoke: 3-question assessment
+Smoke: one attempt-level outcome
