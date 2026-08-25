@@ -68,3 +68,4 @@ Smoke: delta arithmetic
 Smoke: move-selector reward parity
 Smoke: delayed LinTS update
 Smoke: initial-prior persistence
+Smoke: cross-attempt continuity
