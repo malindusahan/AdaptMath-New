@@ -69,3 +69,4 @@ Smoke: move-selector reward parity
 Smoke: delayed LinTS update
 Smoke: initial-prior persistence
 Smoke: cross-attempt continuity
+Smoke: independent BKT parity
