@@ -70,3 +70,4 @@ Smoke: delayed LinTS update
 Smoke: initial-prior persistence
 Smoke: cross-attempt continuity
 Smoke: independent BKT parity
+Smoke: unauthorized-skill isolation
