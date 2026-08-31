@@ -82,6 +82,7 @@ class ResolverConfig(BaseModel):
 
 class ResolverInput(BaseModel):
     event_id: str
+    source_action_event_id: Optional[str] = None
     student_id: str
     skill_id: str
     correctness: Correctness
@@ -151,6 +152,7 @@ class BKTUpdate(BaseModel):
 
 class ResolvedSignal(BaseModel):
     event_id: str
+    source_action_event_id: Optional[str] = None
     student_id: str
     skill_id: str
     primary_signal: PrimarySignal
@@ -261,6 +263,7 @@ def _no_update(
 ) -> ResolvedSignal:
     return ResolvedSignal(
         event_id=event.event_id,
+        source_action_event_id=event.source_action_event_id,
         student_id=event.student_id,
         skill_id=event.skill_id,
         primary_signal=PrimarySignal.NO_UPDATE,
@@ -340,6 +343,7 @@ def _positive_update(
 
     return ResolvedSignal(
         event_id=event.event_id,
+        source_action_event_id=event.source_action_event_id,
         student_id=event.student_id,
         skill_id=event.skill_id,
         primary_signal=primary_signal,
@@ -409,6 +413,7 @@ def _negative_update(
 
     return ResolvedSignal(
         event_id=event.event_id,
+        source_action_event_id=event.source_action_event_id,
         student_id=event.student_id,
         skill_id=event.skill_id,
         primary_signal=PrimarySignal.INCORRECT_ANSWER,
@@ -489,6 +494,7 @@ def _behavioural_proxy_update(
 
     return ResolvedSignal(
         event_id=event.event_id,
+        source_action_event_id=event.source_action_event_id,
         student_id=event.student_id,
         skill_id=event.skill_id,
         primary_signal=PrimarySignal.BEHAVIOURAL_DIFFICULTY,

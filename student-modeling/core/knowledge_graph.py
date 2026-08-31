@@ -16,11 +16,16 @@ external code that needs to read or update student mastery state.
 
 import logging
 import math
+import sqlite3
 import uuid
 from typing import Optional
 from bkt.predict import BKTPredictor, ColdStartPriorCalculator
 from core.attempt_learning_outcome import AdaptiveAttemptContext
-from db.database import get_connection, initialise_database
+from db.database import (
+    acquire_student_skill_lock,
+    get_connection,
+    initialise_database,
+)
 from config import (
     MASTERY_STRONG_THRESHOLD,
     MASTERY_WEAK_THRESHOLD,
@@ -111,23 +116,41 @@ class KnowledgeGraph:
         confidence: float = 1.0,
         signal_type: Optional[str] = None,
         session_id: Optional[str] = None,
-    ) -> None:
+        resolver_event_id: Optional[str] = None,
+    ) -> bool:
         """Log a single attempt (with optional confidence weight) to the database."""
         if correct not in (0, 1):
             raise ValueError(f"correct must be 0 or 1, got {correct}")
         if not 0.0 <= confidence <= 1.0:
             raise ValueError(f"confidence must be in [0, 1], got {confidence}")
+        if resolver_event_id is not None:
+            resolver_event_id = _require_identifier(
+                resolver_event_id,
+                "resolver_event_id",
+            )
 
         self.ensure_student(student_id)
 
         with get_connection() as conn:
-            conn.execute(
+            acquire_student_skill_lock(conn, student_id, skill)
+            cursor = conn.execute(
                 """
-                INSERT INTO attempts (student_id, skill_name, correct, confidence, signal_type, session_id)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO attempts
+                    (resolver_event_id, student_id, skill_name, correct,
+                     confidence, signal_type, session_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (student_id, skill, correct, confidence, signal_type, session_id),
+                (
+                    resolver_event_id,
+                    student_id,
+                    skill,
+                    correct,
+                    confidence,
+                    signal_type,
+                    session_id,
+                ),
             )
+        return cursor.rowcount == 1
 
     def get_attempts(self, student_id: str, skill: str) -> list[tuple[int, float]]:
         """
@@ -565,14 +588,29 @@ class KnowledgeGraph:
                 "source": "persisted_effective_initial_prior",
             }
 
-        probability = self.predictor.predict(
-            skill,
-            attempts,
-            initial_prior=effective_initial_prior,
-        )
-        label = label_mastery(probability)
-
         with get_connection() as conn:
+            acquire_student_skill_lock(conn, student_id, skill)
+            # Re-read the ordered stream after acquiring the PostgreSQL
+            # student/skill lock. This preserves the exact predictor call while
+            # preventing a concurrent observation from being omitted by a
+            # stale pre-lock snapshot.
+            locked_rows = conn.execute(
+                """
+                SELECT correct, confidence FROM attempts
+                WHERE student_id = ? AND skill_name = ?
+                ORDER BY created_at ASC, attempt_id ASC
+                """,
+                (student_id, skill),
+            ).fetchall()
+            locked_attempts = [
+                (row["correct"], row["confidence"]) for row in locked_rows
+            ]
+            probability = self.predictor.predict(
+                skill,
+                locked_attempts,
+                initial_prior=effective_initial_prior,
+            )
+            label = label_mastery(probability)
             existing = conn.execute(
                 "SELECT mastery_probability FROM mastery WHERE student_id = ? AND skill_name = ?",
                 (student_id, skill),
@@ -748,28 +786,45 @@ class KnowledgeGraph:
         additional attempts or independently affect mastery.
         """
         session_id = session_id or f"sess_{uuid.uuid4().hex[:12]}"
+        student_id = _require_identifier(student_id, "student_id")
         self.ensure_student(student_id)
 
-        affected_skills = set()
-        behaviour_events = []
+        events = list(resolved_events)
+        for event in events:
+            event_student_id = getattr(event, "student_id", student_id)
+            if event_student_id != student_id:
+                raise ValueError(
+                    "Resolved event student_id differs from process student_id."
+                )
+            _require_identifier(event.event_id, "resolved event_id")
+            _require_identifier(event.skill_id, "resolved skill_id")
 
-        with get_connection() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO sessions
-                    (session_id, student_id, concept_count)
-                VALUES (?, ?, ?)
-                """,
-                (
-                    session_id,
-                    student_id,
-                    len({event.skill_id for event in resolved_events}),
-                ),
+        # Selecting/persisting the immutable prior may happen before the
+        # observation transaction. It is initialization metadata, not learner
+        # evidence. Every observation row and its dependent mastery state are
+        # committed together below.
+        prior_by_skill: dict[str, tuple[dict, Optional[dict], bool]] = {}
+        for skill in sorted(
+            {
+                event.skill_id
+                for event in events
+                if event.bkt_update.should_update
+            }
+        ):
+            prior_by_skill[skill] = self._effective_prior_for_update(
+                student_id,
+                skill,
+                self.get_mastery(student_id, skill),
             )
 
-        for event in resolved_events:
-            behaviour_events.append({
+        behaviour_events = [
+            {
                 "event_id": event.event_id,
+                "source_action_event_id": getattr(
+                    event,
+                    "source_action_event_id",
+                    None,
+                ),
                 "skill": event.skill_id,
                 "primary_signal": event.primary_signal.value,
                 "reasoning_probability": event.behaviour.reasoning_probability,
@@ -778,29 +833,319 @@ class KnowledgeGraph:
                 "repeated_misunderstanding": (
                     event.history.repeated_misunderstanding
                 ),
-            })
+            }
+            for event in events
+        ]
+        observation_results: list[dict] = []
+        latest_skill_updates: dict[str, dict] = {}
 
-            if not event.bkt_update.should_update:
-                continue
-
-            self.record_attempt(
-                student_id=student_id,
-                skill=event.skill_id,
-                correct=event.bkt_update.outcome,
-                confidence=event.bkt_update.update_confidence,
-                signal_type=event.primary_signal.value,
-                session_id=session_id,
+        with get_connection() as conn:
+            for locked_skill in sorted({event.skill_id for event in events}):
+                acquire_student_skill_lock(conn, student_id, locked_skill)
+            conn.execute(
+                """
+                INSERT INTO sessions (session_id, student_id, concept_count)
+                VALUES (?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    student_id = excluded.student_id,
+                    concept_count = excluded.concept_count
+                """,
+                (
+                    session_id,
+                    student_id,
+                    len({event.skill_id for event in events}),
+                ),
             )
-            affected_skills.add(event.skill_id)
 
-        skill_updates = []
-        for skill in sorted(affected_skills):
-            update_result = self.update_mastery(student_id, skill)
-            skill_updates.append({"skill": skill, **update_result})
+            for event in events:
+                update = event.bkt_update
+                source_action_event_id = getattr(
+                    event,
+                    "source_action_event_id",
+                    None,
+                )
+                raw_observation_source = getattr(
+                    update,
+                    "observation_source",
+                    None,
+                )
+                observation_source = getattr(
+                    raw_observation_source,
+                    "value",
+                    (
+                        "evaluator"
+                        if update.should_update
+                        else "none"
+                    ),
+                )
+                payload = (
+                    event.event_id,
+                    source_action_event_id,
+                    student_id,
+                    event.skill_id,
+                    int(bool(update.should_update)),
+                    update.outcome,
+                    float(update.update_confidence),
+                    observation_source,
+                    event.primary_signal.value,
+                    session_id,
+                )
+                cursor = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO resolved_events
+                        (event_id, source_action_event_id, student_id,
+                         skill_name, should_update, outcome,
+                         update_confidence, observation_source,
+                         primary_signal, session_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    payload,
+                )
+                inserted = cursor.rowcount == 1
+
+                if not inserted:
+                    stored = conn.execute(
+                        """
+                        SELECT source_action_event_id, student_id, skill_name,
+                               should_update, outcome, update_confidence,
+                               observation_source, primary_signal,
+                               mastery_before, mastery_after, delta_mastery
+                        FROM resolved_events WHERE event_id = ?
+                        """,
+                        (event.event_id,),
+                    ).fetchone()
+                    if stored is None:
+                        raise RuntimeError(
+                            "Resolver event conflict could not be read back."
+                        )
+                    expected = (
+                        source_action_event_id,
+                        student_id,
+                        event.skill_id,
+                        int(bool(update.should_update)),
+                        update.outcome,
+                        float(update.update_confidence),
+                        observation_source,
+                        event.primary_signal.value,
+                    )
+                    observed = tuple(stored)[:8]
+                    if observed != expected:
+                        raise ValueError(
+                            "resolver event_id was replayed with different "
+                            "scientific evidence."
+                        )
+
+                if inserted:
+                    before = self._current_mastery_in_connection(
+                        conn,
+                        student_id,
+                        event.skill_id,
+                        prior_by_skill.get(event.skill_id),
+                    )
+                    after = before
+                else:
+                    before = stored["mastery_before"]
+                    after = stored["mastery_after"]
+                persistence_status = (
+                    "persisted" if inserted else "already_persisted"
+                )
+
+                if inserted and update.should_update:
+                    attempt_cursor = conn.execute(
+                        """
+                        INSERT OR IGNORE INTO attempts
+                            (resolver_event_id, student_id, skill_name, correct,
+                             confidence, signal_type, session_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            event.event_id,
+                            student_id,
+                            event.skill_id,
+                            update.outcome,
+                            float(update.update_confidence),
+                            event.primary_signal.value,
+                            session_id,
+                        ),
+                    )
+                    if attempt_cursor.rowcount != 1:
+                        raise RuntimeError(
+                            "New resolver event did not create exactly one BKT "
+                            "observation."
+                        )
+                    self._after_resolved_observation_insert(
+                        conn,
+                        event.event_id,
+                    )
+                    update_result = self._update_mastery_in_connection(
+                        conn,
+                        student_id,
+                        event.skill_id,
+                        prior_by_skill[event.skill_id],
+                    )
+                    after = float(update_result["probability"])
+                    latest_skill_updates[event.skill_id] = {
+                        "skill": event.skill_id,
+                        **update_result,
+                    }
+
+                if inserted:
+                    delta = (
+                        None
+                        if before is None or after is None
+                        else float(after - before)
+                    )
+                    conn.execute(
+                        """
+                        UPDATE resolved_events
+                        SET mastery_before = ?, mastery_after = ?,
+                            delta_mastery = ?
+                        WHERE event_id = ?
+                        """,
+                        (before, after, delta, event.event_id),
+                    )
+                else:
+                    delta = stored["delta_mastery"]
+
+                observation_results.append(
+                    {
+                        "event_id": event.event_id,
+                        "source_action_event_id": source_action_event_id,
+                        "skill": event.skill_id,
+                        "should_update": bool(update.should_update),
+                        "observation_source": observation_source,
+                        "outcome": update.outcome,
+                        "update_confidence": float(update.update_confidence),
+                        "persistence_status": persistence_status,
+                        "mastery_before": before,
+                        "mastery_after": after,
+                        "delta_mastery": delta,
+                    }
+                )
 
         return {
             "session_id": session_id,
-            "skills_updated": skill_updates,
+            "skills_updated": [
+                latest_skill_updates[skill]
+                for skill in sorted(latest_skill_updates)
+            ],
+            "observation_results": observation_results,
             "behaviour_events": behaviour_events,
             "graph": self.get_student_graph(student_id),
+        }
+
+    @staticmethod
+    def _after_resolved_observation_insert(
+        conn: sqlite3.Connection,
+        event_id: str,
+    ) -> None:
+        """Failure-injection seam executed inside the observation transaction."""
+
+        del conn, event_id
+
+    def _current_mastery_in_connection(
+        self,
+        conn: sqlite3.Connection,
+        student_id: str,
+        skill: str,
+        prior_bundle: Optional[tuple[dict, Optional[dict], bool]],
+    ) -> Optional[float]:
+        row = conn.execute(
+            """
+            SELECT mastery_probability FROM mastery
+            WHERE student_id = ? AND skill_name = ?
+            """,
+            (student_id, skill),
+        ).fetchone()
+        if row is not None:
+            return float(row["mastery_probability"])
+        if prior_bundle is None:
+            return None
+        prior_record = prior_bundle[0]
+        prior = float(prior_record["effective_initial_prior"])
+        attempts = conn.execute(
+            """
+            SELECT correct, confidence FROM attempts
+            WHERE student_id = ? AND skill_name = ?
+            ORDER BY created_at ASC, attempt_id ASC
+            """,
+            (student_id, skill),
+        ).fetchall()
+        if not attempts:
+            return prior
+        return float(
+            self.predictor.predict(
+                skill,
+                [(row["correct"], row["confidence"]) for row in attempts],
+                initial_prior=prior,
+            )
+        )
+
+    def _update_mastery_in_connection(
+        self,
+        conn: sqlite3.Connection,
+        student_id: str,
+        skill: str,
+        prior_bundle: tuple[dict, Optional[dict], bool],
+    ) -> dict:
+        prior_record, cold_start_details, compatibility_rebased = prior_bundle
+        effective_initial_prior = float(
+            prior_record["effective_initial_prior"]
+        )
+        attempts = conn.execute(
+            """
+            SELECT correct, confidence FROM attempts
+            WHERE student_id = ? AND skill_name = ?
+            ORDER BY created_at ASC, attempt_id ASC
+            """,
+            (student_id, skill),
+        ).fetchall()
+        probability = float(
+            self.predictor.predict(
+                skill,
+                [(row["correct"], row["confidence"]) for row in attempts],
+                initial_prior=effective_initial_prior,
+            )
+        )
+        label = label_mastery(probability)
+        existing = conn.execute(
+            """
+            SELECT mastery_probability FROM mastery
+            WHERE student_id = ? AND skill_name = ?
+            """,
+            (student_id, skill),
+        ).fetchone()
+        previous = (
+            float(existing["mastery_probability"])
+            if existing is not None
+            else None
+        )
+        conn.execute(
+            """
+            INSERT INTO mastery
+                (student_id, skill_name, mastery_probability, mastery_label,
+                 previous_mastery_probability)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(student_id, skill_name) DO UPDATE SET
+                previous_mastery_probability = mastery.mastery_probability,
+                mastery_probability = excluded.mastery_probability,
+                mastery_label = excluded.mastery_label,
+                last_updated = CURRENT_TIMESTAMP
+            """,
+            (student_id, skill, probability, label, previous),
+        )
+        cold_start_used = prior_record["prior_source"] == "transfer"
+        if cold_start_details is None and cold_start_used:
+            cold_start_details = {
+                "transferred_prior": effective_initial_prior,
+                "source": "persisted_effective_initial_prior",
+            }
+        return {
+            "probability": probability,
+            "label": label,
+            "cold_start_used": cold_start_used,
+            "cold_start_details": cold_start_details,
+            "effective_initial_prior": effective_initial_prior,
+            "effective_initial_prior_source": prior_record["prior_source"],
+            "compatibility_rebased": compatibility_rebased,
         }

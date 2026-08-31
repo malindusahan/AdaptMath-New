@@ -15,7 +15,7 @@ from core.evaluation_contract import EvaluationVerdict
 from core.signal_resolver import Correctness
 
 
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 
 ObjectiveComparator = Callable[

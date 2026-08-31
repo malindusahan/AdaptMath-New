@@ -222,6 +222,7 @@ class CrossSessionStudentModelPipeline:
         session_id: str,
         behavioural_skill: Optional[str] = None,
         attempt_context: Optional[AdaptiveAttemptContext] = None,
+        source_action_event_id: Optional[str] = None,
     ) -> dict:
         if attempt_context is not None:
             if not isinstance(attempt_context, AdaptiveAttemptContext):
@@ -289,6 +290,7 @@ class CrossSessionStudentModelPipeline:
             history_getter=(
                 self.knowledge_graph.get_attempts
             ),
+            source_action_event_id=source_action_event_id,
         )
 
         knowledge_graph_result = (

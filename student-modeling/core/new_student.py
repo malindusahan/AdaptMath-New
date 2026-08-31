@@ -29,7 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 
 SYSTEM_PROMPT = """You are an educational profiling assistant. Your job is to analyse a student's first message to a tutoring system and infer four profile parameters from their language. The system uses these parameters to adapt its tone, pace, and support level for the student.

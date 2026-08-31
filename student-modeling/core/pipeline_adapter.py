@@ -58,6 +58,7 @@ def _event_id(
     session_id: str,
     turn_index: int,
     skill: str,
+    source_action_event_id: Optional[str] = None,
 ) -> str:
     """
     Build a deterministic ID for one student-turn x skill event.
@@ -69,6 +70,11 @@ def _event_id(
         .replace("/", "_")
     )
 
+    if source_action_event_id is not None:
+        action_id = str(source_action_event_id).strip()
+        if not action_id:
+            raise ValueError("source_action_event_id cannot be empty.")
+        return f"{action_id}:resolver:{safe_skill}"
     return f"{session_id}:turn_{turn_index}:{safe_skill}"
 
 
@@ -87,6 +93,7 @@ def build_resolver_inputs(
     ] = None,
     default_evaluator_confidence: float = 1.0,
     history_limit: int = 5,
+    source_action_event_id: Optional[str] = None,
 ) -> list[ResolverInput]:
     """
     Convert ConceptExtractor event output into ResolverInput objects.
@@ -232,8 +239,10 @@ def build_resolver_inputs(
             event.get("evaluator_source", "")
         ).strip()
         allow_behavioural_proxy = (
-            evaluator_source
-            != "skill_not_authorized_for_assessment"
+            evaluator_source not in {
+                "skill_not_authorized_for_assessment",
+                "adaptmath_no_knowledge_evidence",
+            }
         )
 
         resolver_inputs.append(
@@ -242,7 +251,9 @@ def build_resolver_inputs(
                     session_id,
                     turn_index,
                     skill,
+                    source_action_event_id,
                 ),
+                source_action_event_id=source_action_event_id,
                 student_id=student_id,
                 skill_id=skill,
                 correctness=correctness_enum,
@@ -275,6 +286,7 @@ def resolve_extracted_events(
     ] = None,
     default_evaluator_confidence: float = 1.0,
     history_limit: int = 5,
+    source_action_event_id: Optional[str] = None,
 ) -> list[ResolvedSignal]:
     """
     Convenience wrapper:
@@ -296,6 +308,7 @@ def resolve_extracted_events(
             default_evaluator_confidence
         ),
         history_limit=history_limit,
+        source_action_event_id=source_action_event_id,
     )
 
     return [

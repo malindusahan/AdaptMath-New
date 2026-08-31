@@ -62,12 +62,35 @@ CREATE TABLE IF NOT EXISTS bkt_initial_priors (
 -- Every attempt a student has made
 CREATE TABLE IF NOT EXISTS attempts (
     attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    resolver_event_id TEXT,
     student_id TEXT NOT NULL,
     skill_name TEXT NOT NULL,
     correct INTEGER NOT NULL CHECK (correct IN (0, 1)),
     confidence REAL NOT NULL DEFAULT 1.0,
     signal_type TEXT,
     session_id TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (student_id) REFERENCES students(student_id)
+);
+
+-- Durable resolver ledger. Every resolved event, including NO_UPDATE, is
+-- recorded once. The primary key is the scientific idempotency boundary.
+CREATE TABLE IF NOT EXISTS resolved_events (
+    event_id TEXT PRIMARY KEY,
+    source_action_event_id TEXT,
+    student_id TEXT NOT NULL,
+    skill_name TEXT NOT NULL,
+    should_update INTEGER NOT NULL CHECK (should_update IN (0, 1)),
+    outcome INTEGER CHECK (outcome IN (0, 1) OR outcome IS NULL),
+    update_confidence REAL NOT NULL CHECK (
+        update_confidence >= 0.0 AND update_confidence <= 1.0
+    ),
+    observation_source TEXT NOT NULL,
+    primary_signal TEXT NOT NULL,
+    session_id TEXT,
+    mastery_before REAL,
+    mastery_after REAL,
+    delta_mastery REAL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (student_id) REFERENCES students(student_id)
 );
@@ -84,5 +107,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- Indexes for fast lookup
 CREATE INDEX IF NOT EXISTS idx_attempts_student_skill 
     ON attempts(student_id, skill_name, created_at);
+CREATE INDEX IF NOT EXISTS idx_resolved_events_source_action
+    ON resolved_events(source_action_event_id);
 CREATE INDEX IF NOT EXISTS idx_mastery_student 
     ON mastery(student_id);
